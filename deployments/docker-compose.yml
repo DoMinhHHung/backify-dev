@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: backify-postgres
+    environment:
+      POSTGRES_USER: backify
+      POSTGRES_PASSWORD: backify
+      POSTGRES_DB: backify_control
+    ports:
+      - "5432:5432"
+    volumes:
+      - backify_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backify -d backify_control"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  backify_pgdata:
