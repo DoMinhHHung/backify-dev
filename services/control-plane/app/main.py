@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-import asyncpg
 import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.adapter.postgres.connection import Database
 from app.config import get_settings
 
 logger = structlog.get_logger()
@@ -39,23 +39,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     settings = get_settings()
     logger.info("app_starting", env=settings.app_env, host=settings.app_host, port=settings.app_port)
-    app.state.db_pool = None
+    db = Database(settings)
     try:
-        app.state.db_pool = await asyncpg.create_pool(
-            dsn=settings.database_url,
-            min_size=settings.database_pool_min_size,
-            max_size=settings.database_pool_max_size,
-        )
-        async with app.state.db_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+        await db.connect()
+        app.state.db = db
         logger.info("db_connected")
     except Exception as exc:
         logger.error("db_connect_failed", error=str(exc))
-        app.state.db_pool = None
+        app.state.db = None
     yield
-    if app.state.db_pool is not None:
-        await app.state.db_pool.close()
-        logger.info("db_pool_closed")
+    if getattr(app.state, "db", None) is not None:
+        await app.state.db.disconnect()
     logger.info("app_stopped")
 
 
@@ -65,14 +59,10 @@ app = FastAPI(title="Backify Control Plane", lifespan=lifespan)
 @app.get("/health")
 async def health() -> JSONResponse:
     db_status = "error"
-    pool = getattr(app.state, "db_pool", None)
-    if pool is not None:
-        try:
-            async with pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-            db_status = "ok"
-        except Exception:
-            db_status = "error"
+    db: Database | None = getattr(app.state, "db", None)
+    if db is not None:
+        ok = await db.health_check()
+        db_status = "ok" if ok else "error"
     status = "ok" if db_status == "ok" else "degraded"
     return JSONResponse(
         status_code=200 if db_status == "ok" else 503,
